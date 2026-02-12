@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2P Chat (WebRTC)</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 100%); color: #eee; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 20px; }
+    h1 { margin-bottom: 8px; color: #e94560; font-size: 2.2rem; }
+    .subtitle { color: #aaa; margin-bottom: 20px; font-size: 0.95em; }
+    .container { width: 100%; max-width: 700px; }
+    .card { background: rgba(22, 33, 62, 0.8); backdrop-filter: blur(10px); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid rgba(233, 69, 96, 0.2); }
+    .card h2 { font-size: 0.95rem; color: #fff; background: linear-gradient(135deg, #e94560, #f5a623); display: inline-block; padding: 6px 14px; border-radius: 6px; margin-bottom: 12px; font-weight: 600; }
+    label { display: block; margin-bottom: 6px; font-size: 0.85em; color: #aaa; font-weight: 500; }
+    input, button { font-size: 0.95rem; padding: 10px 12px; border-radius: 6px; border: 1px solid #0f3460; outline: none; transition: all 0.3s; }
+    input { width: 100%; background: #0f3460; color: #eee; margin-bottom: 10px; }
+    input:focus { border-color: #e94560; background: #1a2450; }
+    button { background: linear-gradient(135deg, #e94560, #d92850); color: #fff; border: none; cursor: pointer; font-weight: 600; }
+    button:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(233, 69, 96, 0.3); }
+    button:active { transform: translateY(0); }
+    button:disabled { background: #444; cursor: not-allowed; transform: none; }
+    .btn-secondary { background: linear-gradient(135deg, #555, #333); }
+    .btn-secondary:hover { box-shadow: 0 8px 16px rgba(85, 85, 85, 0.3); }
+    .btn-danger { background: linear-gradient(135deg, #e94560, #c73a54); }
+    .id-display { font-family: monospace; font-size: 1.4rem; color: #53d769; word-break: break-all; user-select: all; cursor: pointer; padding: 12px; background: #0a1f3e; border-radius: 6px; border: 1px solid #0f3460; transition: all 0.3s; }
+    .id-display:hover { border-color: #53d769; background: #0f2f4e; }
+    .status { font-size: 0.8em; margin-top: 6px; display: inline-block; padding: 4px 8px; border-radius: 4px; }
+    .status.connected { color: #53d769; background: rgba(83, 215, 105, 0.1); }
+    .status.disconnected { color: #e94560; background: rgba(233, 69, 96, 0.1); }
+    .status.waiting { color: #f5a623; background: rgba(245, 166, 35, 0.1); }
+    #chatArea { display: none; }
+    #messages { height: 350px; overflow-y: auto; background: rgba(15, 52, 96, 0.5); border-radius: 8px; padding: 12px; margin-bottom: 10px; border: 1px solid rgba(233, 69, 96, 0.1); }
+    #messages::-webkit-scrollbar { width: 6px; }
+    #messages::-webkit-scrollbar-track { background: transparent; }
+    #messages::-webkit-scrollbar-thumb { background: #e94560; border-radius: 3px; }
+    .msg { margin-bottom: 8px; padding: 10px 12px; border-radius: 8px; max-width: 75%; word-wrap: break-word; animation: slideIn 0.3s ease-out; }
+    @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
+    .msg.sent { background: linear-gradient(135deg, #e94560, #d92850); margin-left: auto; text-align: right; }
+    .msg.received { background: rgba(22, 33, 62, 0.8); border: 1px solid rgba(233, 69, 96, 0.2); }
+    .msg .meta { font-size: 0.7em; color: #999; margin-top: 4px; }
+    .row { display: flex; gap: 8px; }
+    .row input { flex: 1; margin-bottom: 0; }
+    .row.stacked { flex-direction: column; }
+    .row.stacked > * { width: 100%; }
+    #fileInfo { font-size: 0.85em; color: #aaa; margin-top: 6px; }
+    .progress { height: 4px; background: rgba(15, 52, 96, 0.5); border-radius: 2px; margin-top: 4px; overflow: hidden; display: none; border: 1px solid rgba(233, 69, 96, 0.2); }
+    .progress-bar { height: 100%; background: linear-gradient(90deg, #e94560, #f5a623); transition: width 0.3s; }
+    #typingIndicator { animation: typingPulse 1.4s infinite; }
+    @keyframes typingPulse { 0%, 60%, 100% { opacity: 0.5; } 30% { opacity: 1; } }
+  </style>
+</head>
+<body>
+  <h1>P2P Chat</h1>
+  <p class="subtitle">🔐 Encrypted browser-to-browser via WebRTC — no middleman</p>
+
+  <div class="container">
+    <!-- Identity -->
+    <div class="card">
+      <h2>1. Your Identity</h2>
+      <label for="usernameInput">Your name (saved locally):</label>
+      <div class="row">
+        <input type="text" id="usernameInput" placeholder="Enter your name" onchange="saveUsername()" onkeydown="if(event.key==='Enter') saveUsername()">
+      </div>
+      <label for="myId" style="margin-top: 12px;">Your Peer ID (share this):</label>
+      <p id="myIdLoading" style="color: #f5a623;">Connecting to signaling...</p>
+      <p id="myId" class="id-display" style="display:none" title="Click to copy"></p>
+      <p id="myIdStatus" class="status waiting">Waiting for PeerJS cloud...</p>
+    </div>
+
+    <!-- Connect -->
+    <div class="card">
+      <h2>2. Connect to Peer</h2>
+      <label for="peerId">Enter the other person\'s Peer ID:</label>
+      <div class="row">
+        <input type="text" id="peerId" placeholder="Paste peer ID here" onkeydown="if(event.key==='Enter') connectToPeer()">
+        <button id="connectBtn" onclick="connectToPeer()">Connect</button>
+      </div>
+      <p id="connStatus" class="status disconnected">Not connected</p>
+      <button id="disconnectBtn" class="btn-danger" onclick="disconnectPeer()" style="display:none; margin-top: 10px;">Disconnect</button>
+    </div>
+
+    <!-- Chat -->
+    <div class="card" id="chatArea">
+      <h2>3. Chat</h2>
+      <div id="messages"></div>
+      <div id="typingIndicator" style="display:none; font-size:0.85em; color:#aaa; font-style:italic; padding:8px 12px;">✏️ <span id="typingName">Peer</span> is typing...</div>
+      <div class="row">
+        <input type="text" id="msgInput" placeholder="Type a message..." onkeydown="if(event.key==='Enter') sendMessage()" oninput="onMessageInput()" onblur="onMessageInputBlur()">
+        <button onclick="sendMessage()">Send</button>
+      </div>
+      <div style="margin-top: 10px;">
+        <label>Send a file:</label>
+        <input type="file" id="fileInput" onchange="sendFile()">
+        <div id="fileInfo"></div>
+        <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>
+      </div>
+      <button class="btn-secondary" onclick="clearChatHistory()" style="margin-top: 10px; width: 100%;">Clear chat history</button>
+    </div>
+  </div>
+
+  <script src="https://unpkg.com/peerjs@1.5.5/dist/peerjs.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
