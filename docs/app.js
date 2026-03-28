@@ -5,6 +5,36 @@
 let peer, conn;
 const CHUNK_SIZE = 64 * 1024; // 64KB chunks for file transfer
 
+function updateConnectionUi(state, message = '') {
+  const statusEl = document.getElementById('connStatus');
+  const btn = document.getElementById('toggleConnBtn');
+
+  statusEl.className = 'status ' + state;
+  statusEl.textContent = message;
+
+  if (state === 'connected') {
+    btn.disabled = false;
+    btn.textContent = 'Disconnect';
+    btn.className = 'btn-danger';
+    return;
+  }
+
+  if (state === 'waiting') {
+    btn.disabled = true;
+    btn.textContent = 'Connecting...';
+    btn.className = '';
+    return;
+  }
+
+  btn.disabled = false;
+  btn.textContent = 'Connect';
+  btn.className = '';
+}
+
+function hasActiveConnection() {
+  return Boolean(conn?.open);
+}
+
 // Random meaningful username generation
 const adjectives = [
   'Happy', 'Clever', 'Quick', 'Bright', 'Snappy', 'Swift', 'Keen', 'Smart',
@@ -50,16 +80,40 @@ peer.on('open', (id) => {
       el.style.color = origColor || '#53d769';
     }, 1500);
   };
+  generateQRCode(id);
   document.getElementById('usernameInput').value = myUsername;
-  document.getElementById('myIdStatus').textContent = 'Ready — share this ID with your peer';
-  document.getElementById('myIdStatus').className = 'status connected';
 });
 
 peer.on('error', (err) => {
   console.error('PeerJS error:', err);
-  document.getElementById('myIdStatus').textContent = err.type + ': ' + err.message;
-  document.getElementById('myIdStatus').className = 'status disconnected';
-  document.getElementById('connectBtn').disabled = false;
+
+  // PeerJS signaling can disconnect while the WebRTC data channel stays alive.
+  if (hasActiveConnection()) {
+    updateConnectionUi('connected', 'Connected (signaling interrupted, chat still active)');
+    return;
+  }
+
+  const msg = err?.type ? `${err.type}: ${err.message || 'Unknown error'}` : 'Connection error';
+  updateConnectionUi('disconnected', msg);
+});
+
+peer.on('disconnected', () => {
+  if (hasActiveConnection()) {
+    updateConnectionUi('connected', 'Connected (reconnecting signaling...)');
+  } else {
+    updateConnectionUi('disconnected', 'Signaling disconnected');
+  }
+
+  // Best effort reconnect to signaling server.
+  if (peer && !peer.destroyed) {
+    peer.reconnect();
+  }
+});
+
+peer.on('close', () => {
+  if (!hasActiveConnection()) {
+    updateConnectionUi('disconnected', 'Peer closed');
+  }
 });
 
 // Accept incoming connections
@@ -70,10 +124,18 @@ peer.on('connection', (incoming) => {
 });
 
 // Connect to a remote peer
+function toggleConnection() {
+  if (conn?.open) {
+    disconnectPeer();
+  } else {
+    connectToPeer();
+  }
+}
+
 function connectToPeer() {
   const remoteId = document.getElementById('peerId').value.trim();
   if (!remoteId) return;
-  document.getElementById('connectBtn').disabled = true;
+  updateConnectionUi('waiting', 'Connecting...');
   conn = peer.connect(remoteId, { reliable: true });
   setupConnection();
 }
@@ -81,13 +143,9 @@ function connectToPeer() {
 // Wire up data channel events
 function setupConnection() {
   conn.on('open', () => {
-    document.getElementById('connStatus').textContent = 'Connected to ' + conn.peer;
-    document.getElementById('connStatus').className = 'status connected';
     document.getElementById('chatArea').style.display = 'block';
-    document.getElementById('connectBtn').disabled = false;
-    document.getElementById('disconnectBtn').style.display = 'inline-block';
+    updateConnectionUi('connected', 'Connected');
     conn.send({ type: 'username', name: myUsername });
-    addSystemMsg('Connected! All messages are now peer-to-peer.');
   });
 
   conn.on('data', (data) => {
@@ -108,7 +166,14 @@ function setupConnection() {
       document.getElementById('typingIndicator').style.display = 'none';
       addMsg(data, 'received', peerUsername);
     } else if (data.type === 'file-meta') {
-      globalThis._incomingFile = { name: data.name, size: data.size, chunks: [], received: 0 };
+      globalThis._incomingFile = {
+        name: data.name,
+        size: data.size,
+        mimeType: data.mimeType || 'application/octet-stream',
+        lastModified: data.lastModified || Date.now(),
+        chunks: [],
+        received: 0,
+      };
       showProgress(true);
       updateProgress(0);
       addSystemMsg('Receiving file: ' + data.name + ' (' + formatBytes(data.size) + ')');
@@ -119,8 +184,10 @@ function setupConnection() {
       f.received += data.chunk.byteLength;
       updateProgress(f.received / f.size);
       if (f.received >= f.size) {
-        const blob = new Blob(f.chunks);
-        const url = URL.createObjectURL(blob);
+        const receivedFile = typeof File === 'function'
+          ? new File(f.chunks, f.name, { type: f.mimeType, lastModified: f.lastModified })
+          : new Blob(f.chunks, { type: f.mimeType });
+        const url = URL.createObjectURL(receivedFile);
         addFileMsg(f.name, url, 'received');
         saveToHistory({ type: 'file', author: peerUsername, filename: f.name, url, timestamp: new Date().toISOString() });
         showProgress(false);
@@ -130,17 +197,15 @@ function setupConnection() {
   });
 
   conn.on('close', () => {
-    document.getElementById('connStatus').textContent = 'Disconnected';
-    document.getElementById('connStatus').className = 'status disconnected';
-    document.getElementById('connectBtn').disabled = false;
-    document.getElementById('disconnectBtn').style.display = 'none';
+    updateConnectionUi('disconnected', 'Disconnected');
     document.getElementById('chatArea').style.display = 'none';
     addSystemMsg('Peer disconnected.');
     peerUsername = 'Peer';
+    conn = null;
   });
 
   conn.on('error', (err) => {
-    document.getElementById('connectBtn').disabled = false;
+    updateConnectionUi('disconnected', 'Connection error');
     addSystemMsg('Connection error: ' + err);
   });
 }
@@ -181,7 +246,7 @@ function onMessageInputBlur() {
 function disconnectPeer() {
   if (conn) conn.close();
   document.getElementById('peerId').value = '';
-  document.getElementById('connectBtn').disabled = false;
+  updateConnectionUi('disconnected', 'Disconnected');
   clearChatHistory();
 }
 
@@ -220,6 +285,13 @@ function clearChatHistory() {
   localStorage.removeItem('p2p-chat-history');
 }
 
+// Wrapper for clear chat history with confirmation
+function clearChatHistoryConfirm() {
+  if (confirm('Clear chat history? This cannot be undone.')) {
+    clearChatHistory();
+  }
+}
+
 // Save username
 function saveUsername() {
   const input = document.getElementById('usernameInput');
@@ -235,15 +307,20 @@ async function sendFile(fileOverride) {
   if (isSendingFile) return;
 
   const fileInput = document.getElementById('fileInput');
-  const fileInfo = document.getElementById('fileInfo');
   const file = fileOverride || fileInput.files[0];
   if (!file || !conn?.open) return;
 
   isSendingFile = true;
   lastFailedFile = null;
 
-  conn.send({ type: 'file-meta', name: file.name, size: file.size });
-  fileInfo.textContent = 'Sending: ' + file.name + ' (' + formatBytes(file.size) + ')';
+  conn.send({
+    type: 'file-meta',
+    name: file.name,
+    size: file.size,
+    mimeType: file.type || 'application/octet-stream',
+    lastModified: file.lastModified || Date.now(),
+  });
+  addSystemMsg('Sending file: ' + file.name + ' (' + formatBytes(file.size) + ')');
   showProgress(true);
 
   let offset = 0;
@@ -259,15 +336,13 @@ async function sendFile(fileOverride) {
 
     addMsg('Sent file: ' + file.name, 'sent', 'You');
     saveToHistory({ type: 'file', author: 'You', filename: file.name, timestamp: new Date().toISOString() });
-    fileInfo.textContent = 'File sent!';
     showProgress(false);
     fileInput.value = '';
     lastFailedFile = null;
   } catch (err) {
     console.error('File send failed:', err);
     lastFailedFile = file;
-    fileInfo.innerHTML = 'Failed to send file. <button class="btn-secondary" type="button" onclick="retryLastFailedFile()">Retry</button>';
-    addSystemMsg('File transfer failed. Please try again.');
+    addSystemActionMsg('File transfer failed: ' + file.name, 'Retry', 'retryLastFailedFile()');
     showProgress(false);
   } finally {
     isSendingFile = false;
@@ -304,6 +379,25 @@ function addSystemMsg(text) {
   div.scrollIntoView({ behavior: 'smooth' });
 }
 
+function addSystemActionMsg(text, actionLabel, actionHandler) {
+  const div = document.createElement('div');
+  div.style.cssText = 'text-align:center; font-size:0.8em; color:#888; margin:8px 0;';
+
+  const textNode = document.createElement('span');
+  textNode.textContent = '— ' + text + ' — ';
+
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn-secondary';
+  button.textContent = actionLabel;
+  button.setAttribute('onclick', actionHandler);
+
+  div.appendChild(textNode);
+  div.appendChild(button);
+  document.getElementById('messages').appendChild(div);
+  div.scrollIntoView({ behavior: 'smooth' });
+}
+
 function showProgress(visible) {
   document.getElementById('progress').style.display = visible ? 'block' : 'none';
 }
@@ -326,4 +420,50 @@ function formatBytes(b) {
   if (b < 1024) return b + ' B';
   if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
   return (b / 1048576).toFixed(1) + ' MB';
+}
+
+// QR Code generation
+function generateQRCode(id) {
+  const container = document.getElementById('qrcode');
+  container.innerHTML = '';
+  new QRCode(container, {
+    text: id,
+    width: 160,
+    height: 160,
+    colorDark: '#53d769',
+    colorLight: '#0a1f3e',
+    correctLevel: QRCode.CorrectLevel.M,
+  });
+  document.getElementById('qrcodeContainer').style.display = 'block';
+}
+
+// QR Code scanner
+let _html5QrScanner = null;
+
+function openQRScanner() {
+  const modal = document.getElementById('qrModal');
+  modal.style.display = 'flex';
+  _html5QrScanner = new Html5Qrcode('qr-reader');
+  _html5QrScanner.start(
+    { facingMode: 'environment' },
+    { fps: 10, qrbox: { width: 240, height: 240 } },
+    (decodedText) => {
+      document.getElementById('peerId').value = decodedText.trim();
+      closeQRScanner();
+      connectToPeer();
+    },
+    () => { /* scan misses are normal, ignore */ }
+  ).catch((err) => {
+    console.error('Camera start error:', err);
+    closeQRScanner();
+    alert('Could not access camera. Please paste the Peer ID manually.');
+  });
+}
+
+function closeQRScanner() {
+  document.getElementById('qrModal').style.display = 'none';
+  if (_html5QrScanner) {
+    _html5QrScanner.stop().catch(() => {});
+    _html5QrScanner = null;
+  }
 }
