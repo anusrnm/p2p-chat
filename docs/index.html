@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>P2P Chat (WebRTC)</title>
+  <title>Direcht</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: system-ui, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #0f3460 100%); color: #eee; min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 20px; }
@@ -11,12 +11,13 @@
     .subtitle { color: #aaa; margin-bottom: 20px; font-size: 0.95em; }
     .container { width: 100%; max-width: 700px; }
     .card { background: rgba(22, 33, 62, 0.8); backdrop-filter: blur(10px); border-radius: 12px; padding: 20px; margin-bottom: 16px; border: 1px solid rgba(233, 69, 96, 0.2); position: relative; }
-    .card h2 { font-size: 0.7rem; color: #fff; background: linear-gradient(135deg, #e94560, #f5a623); display: inline-block; padding: 4px 10px; border-radius: 6px; position: absolute; top: -8px; right: 20px; margin-bottom: 0; font-weight: 600; }
+    .card h2 { font-size: 0.7rem; color: #000; background: linear-gradient(135deg, #e94560, #f5a623); display: inline-block; padding: 4px 10px; border-radius: 6px; position: absolute; top: -8px; right: 20px; margin-bottom: 0; font-weight: 600; }
     label { display: block; margin-bottom: 6px; font-size: 0.85em; color: #aaa; font-weight: 500; }
     input, button { font-size: 0.95rem; padding: 10px 12px; border-radius: 6px; border: 1px solid #0f3460; outline: none; transition: all 0.3s; }
     input { width: 100%; background: #0f3460; color: #eee; margin-bottom: 10px; }
+    .peerId-display { font-family: monospace; }
     input:focus { border-color: #e94560; background: #1a2450; }
-    button { background: linear-gradient(135deg, #e94560, #d92850); color: #fff; border: none; cursor: pointer; font-weight: 600; }
+    button { background: linear-gradient(135deg, #e94560, #d92850); color: #ffffff; border: none; cursor: pointer; font-weight: 600; text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5); text-shadow: 0 2px 4px rgba(0, 0, 0, 0.7); }
     button:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(233, 69, 96, 0.3); }
     button:active { transform: translateY(0); }
     button:disabled { background: #444; cursor: not-allowed; transform: none; }
@@ -26,7 +27,7 @@
     .id-display { font-family: monospace; font-size: 1.4rem; color: #53d769; word-break: break-all; user-select: all; cursor: pointer; padding: 12px; background: #0a1f3e; border-radius: 6px; border: 1px solid #0f3460; transition: all 0.3s; }
     .id-display:hover { border-color: #53d769; background: #0f2f4e; }
     .status { font-size: 0.8em; margin-top: 6px; display: inline-block; padding: 4px 8px; border-radius: 4px; }
-    .status.connected { color: #53d769; background: rgba(83, 215, 105, 0.1); }
+    .status.connected { color: #53d769; background: rgba(83, 215, 105, 0.25); }
     .status.disconnected { color: #e94560; background: rgba(233, 69, 96, 0.1); }
     .status.waiting { color: #f5a623; background: rgba(245, 166, 35, 0.1); }
     #chatArea { display: none; }
@@ -51,8 +52,8 @@
   </style>
 </head>
 <body>
-  <h1>P2P Chat</h1>
-  <p class="subtitle">🔐 Encrypted browser-to-browser via WebRTC — no middleman</p>
+  <h1>Direcht</h1>
+  <p class="subtitle">🔐 Encrypted browser-to-browser via WebRTC — no middleman v1.0.1</p>
 
   <div class="container">
     <!-- Identity -->
@@ -64,7 +65,7 @@
       </div>
       <label for="myId" style="margin-top: 12px;">Your Peer ID (share this):</label>
       <p id="myIdLoading" style="color: #f5a623;">Connecting to signaling...</p>
-      <p id="myId" class="id-display" style="display:none" title="Click to copy"></p>
+      <input type="text" id="myId" class="id-display" style="display:none" color: #53d769; title="Click to copy" readonly>
       <p id="myIdStatus" class="status waiting">Waiting for PeerJS cloud...</p>
     </div>
 
@@ -73,7 +74,7 @@
       <h2>2. Connect to Peer</h2>
       <label for="peerId">Enter the other person\'s Peer ID:</label>
       <div class="row">
-        <input type="text" id="peerId" placeholder="Paste peer ID here" onkeydown="if(event.key==='Enter') connectToPeer()">
+        <input type="text" id="peerId" class="peerId-display" placeholder="Paste peer ID here" onkeydown="if(event.key==='Enter') connectToPeer()">
         <button id="connectBtn" onclick="connectToPeer()">Connect</button>
       </div>
       <p id="connStatus" class="status disconnected">Not connected</p>
@@ -90,7 +91,7 @@
         <button onclick="sendMessage()">Send</button>
       </div>
       <div style="margin-top: 10px;">
-        <label>Send a file:</label>
+        <label for="fileInput">Send a file:</label>
         <input type="file" id="fileInput" onchange="sendFile()">
         <div id="fileInfo"></div>
         <div class="progress" id="progress"><div class="progress-bar" id="progressBar"></div></div>

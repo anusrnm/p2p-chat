@@ -28,6 +28,8 @@ let myUsername = localStorage.getItem('p2p-chat-username') || generateRandomUser
 let peerUsername = 'Peer';
 let typingTimeout;
 let peerIsTyping = false;
+let lastFailedFile = null;
+let isSendingFile = false;
 
 // Initialize Peer
 peer = new Peer(); // auto-generated ID, free PeerJS cloud for signaling
@@ -36,14 +38,16 @@ peer.on('open', (id) => {
   document.getElementById('myIdLoading').style.display = 'none';
   const el = document.getElementById('myId');
   el.style.display = 'block';
-  el.textContent = id;
+  el.value = id;
   el.onclick = () => {
+    el.select();
     navigator.clipboard.writeText(id);
+    const origColor = el.style.color;
     el.style.color = '#f5a623';
-    el.textContent = '✓ Copied!';
+    el.setAttribute('placeholder', '✓ Copied!');
     setTimeout(() => {
-      el.textContent = id;
-      el.style.color = '#53d769';
+      el.setAttribute('placeholder', '');
+      el.style.color = origColor || '#53d769';
     }, 1500);
   };
   document.getElementById('usernameInput').value = myUsername;
@@ -55,6 +59,7 @@ peer.on('error', (err) => {
   console.error('PeerJS error:', err);
   document.getElementById('myIdStatus').textContent = err.type + ': ' + err.message;
   document.getElementById('myIdStatus').className = 'status disconnected';
+  document.getElementById('connectBtn').disabled = false;
 });
 
 // Accept incoming connections
@@ -103,12 +108,12 @@ function setupConnection() {
       document.getElementById('typingIndicator').style.display = 'none';
       addMsg(data, 'received', peerUsername);
     } else if (data.type === 'file-meta') {
-      window._incomingFile = { name: data.name, size: data.size, chunks: [], received: 0 };
+      globalThis._incomingFile = { name: data.name, size: data.size, chunks: [], received: 0 };
       showProgress(true);
       updateProgress(0);
       addSystemMsg('Receiving file: ' + data.name + ' (' + formatBytes(data.size) + ')');
     } else if (data.type === 'file-chunk') {
-      const f = window._incomingFile;
+      const f = globalThis._incomingFile;
       if (!f) return;
       f.chunks.push(data.chunk);
       f.received += data.chunk.byteLength;
@@ -119,7 +124,7 @@ function setupConnection() {
         addFileMsg(f.name, url, 'received');
         saveToHistory({ type: 'file', author: peerUsername, filename: f.name, url, timestamp: new Date().toISOString() });
         showProgress(false);
-        window._incomingFile = null;
+        globalThis._incomingFile = null;
       }
     }
   });
@@ -127,6 +132,7 @@ function setupConnection() {
   conn.on('close', () => {
     document.getElementById('connStatus').textContent = 'Disconnected';
     document.getElementById('connStatus').className = 'status disconnected';
+    document.getElementById('connectBtn').disabled = false;
     document.getElementById('disconnectBtn').style.display = 'none';
     document.getElementById('chatArea').style.display = 'none';
     addSystemMsg('Peer disconnected.');
@@ -134,6 +140,7 @@ function setupConnection() {
   });
 
   conn.on('error', (err) => {
+    document.getElementById('connectBtn').disabled = false;
     addSystemMsg('Connection error: ' + err);
   });
 }
@@ -142,7 +149,7 @@ function setupConnection() {
 function sendMessage() {
   const input = document.getElementById('msgInput');
   const text = input.value.trim();
-  if (!text || !conn || !conn.open) return;
+  if (!text || !conn?.open) return;
   conn.send(text);
   addMsg(text, 'sent', 'You');
   saveToHistory({ type: 'text', author: 'You', text, timestamp: new Date().toISOString() });
@@ -154,7 +161,7 @@ function sendMessage() {
 // Detect typing and send typing indicator
 let typingSent = false;
 function onMessageInput() {
-  if (!conn || !conn.open) return;
+  if (!conn?.open) return;
   
   const input = document.getElementById('msgInput');
   if (input.value.trim().length > 0) {
@@ -218,45 +225,58 @@ function saveUsername() {
   const input = document.getElementById('usernameInput');
   myUsername = input.value.trim() || 'Anonymous';
   localStorage.setItem('p2p-chat-username', myUsername);
-  if (conn && conn.open) {
+  if (conn?.open) {
     conn.send({ type: 'username', name: myUsername });
   }
 }
 
 // Send file via data channel
-function sendFile() {
-  const file = document.getElementById('fileInput').files[0];
-  if (!file || !conn || !conn.open) return;
+async function sendFile(fileOverride) {
+  if (isSendingFile) return;
+
+  const fileInput = document.getElementById('fileInput');
+  const fileInfo = document.getElementById('fileInfo');
+  const file = fileOverride || fileInput.files[0];
+  if (!file || !conn?.open) return;
+
+  isSendingFile = true;
+  lastFailedFile = null;
 
   conn.send({ type: 'file-meta', name: file.name, size: file.size });
-  document.getElementById('fileInfo').textContent = 'Sending: ' + file.name + ' (' + formatBytes(file.size) + ')';
+  fileInfo.textContent = 'Sending: ' + file.name + ' (' + formatBytes(file.size) + ')';
   showProgress(true);
 
-  const reader = new FileReader();
   let offset = 0;
 
-  reader.onload = (e) => {
-    conn.send({ type: 'file-chunk', chunk: e.target.result });
-    offset += e.target.result.byteLength;
-    updateProgress(offset / file.size);
-
-    if (offset < file.size) {
-      readSlice();
-    } else {
-      addMsg('Sent file: ' + file.name, 'sent', 'You');
-      saveToHistory({ type: 'file', author: 'You', filename: file.name, timestamp: new Date().toISOString() });
-      document.getElementById('fileInfo').textContent = 'File sent!';
-      showProgress(false);
-      document.getElementById('fileInput').value = '';
+  try {
+    while (offset < file.size) {
+      const slice = file.slice(offset, offset + CHUNK_SIZE);
+      const chunk = await slice.arrayBuffer();
+      conn.send({ type: 'file-chunk', chunk });
+      offset += chunk.byteLength;
+      updateProgress(offset / file.size);
     }
-  };
 
-  const readSlice = () => {
-    const slice = file.slice(offset, offset + CHUNK_SIZE);
-    reader.readAsArrayBuffer(slice);
-  };
+    addMsg('Sent file: ' + file.name, 'sent', 'You');
+    saveToHistory({ type: 'file', author: 'You', filename: file.name, timestamp: new Date().toISOString() });
+    fileInfo.textContent = 'File sent!';
+    showProgress(false);
+    fileInput.value = '';
+    lastFailedFile = null;
+  } catch (err) {
+    console.error('File send failed:', err);
+    lastFailedFile = file;
+    fileInfo.innerHTML = 'Failed to send file. <button class="btn-secondary" type="button" onclick="retryLastFailedFile()">Retry</button>';
+    addSystemMsg('File transfer failed. Please try again.');
+    showProgress(false);
+  } finally {
+    isSendingFile = false;
+  }
+}
 
-  readSlice();
+async function retryLastFailedFile() {
+  if (!lastFailedFile) return;
+  await sendFile(lastFailedFile);
 }
 
 // UI Helpers
